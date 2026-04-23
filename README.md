@@ -202,3 +202,86 @@ src/
    - `GITHUB_STEP_SUMMARY` 自动输出两条表达式的最优变体
 
 > CI 默认使用 `std` backend，且关闭 LLVM JIT/fast_math，保证跨平台可重复和依赖最小化。
+
+## CI 数据分析与总结（2026-04-24）
+
+本节基于 GitHub Actions 实际产物（artifact CSV）进行统计，目标是验证：
+
+1. 多平台 smoke benchmark 是否稳定通过；  
+2. 本轮 CI 补强（并发控制、矩阵调整、summary 步骤）是否影响性能结果一致性。
+
+### 分析口径
+
+- 表达式：`a+b-sin(c)`
+- 配置：`N=4096`, `block=128`, `iters=5`, `backend=std`, `--no-vm --no-llvm-jit`
+- 变体：`step-major/switch`, `step-major/fnptr`, `block-major/switch`, `block-major/fnptr`
+- 数据来源：
+  - 上一轮稳定版 CI：run `24843906793`
+  - 本轮补强后 CI：run `24844069343`
+
+### 1) 工作流执行健康度
+
+| Run ID | 结论 | 覆盖平台 | 总体耗时（墙钟） |
+|---:|---|---|---:|
+| 24843906793 | success | ubuntu-x64 / windows-x64 / macos-arm64 | 49s |
+| 24844069343 | success | ubuntu-x64 / windows-x64 / macos-arm64 | 50s |
+
+> 说明：两次 run 耗时同量级，补强没有引入明显额外 CI 时间成本。
+
+### 2) 各平台作业时长（本轮）
+
+| 平台作业 | 时长 |
+|---|---:|
+| ubuntu-latest-x64 | 24s |
+| macos-14-arm64 | 22s |
+| windows-latest-x64 | 44s |
+
+> Windows 仍是最慢构建平台，符合历史观察。
+
+### 3) 本轮 smoke 原始结果（median_ns）
+
+| 平台 | step-major/switch | step-major/fnptr | block-major/switch | block-major/fnptr | 平台最优 |
+|---|---:|---:|---:|---:|---|
+| ubuntu-latest-x64 | 21423 | 19800 | **19269** | 19349 | block-major/switch |
+| windows-latest-x64 | 40800 | 23400 | 22100 | **21900** | block-major/fnptr |
+| macos-14-arm64 | 27458 | 18084 | 15833 | **15375** | block-major/fnptr |
+
+### 4) 跨平台聚合（本轮）
+
+| 变体 | median_ns 平均（3平台） | CV% 平均 | MOps/s 平均 |
+|---|---:|---:|---:|
+| block-major/fnptr | **18874.7** | **5.61** | **665.13** |
+| block-major/switch | 19067.3 | 10.99 | 656.61 |
+| step-major/fnptr | 20428.0 | 10.95 | 608.41 |
+| step-major/switch | 29893.7 | 16.96 | 440.76 |
+
+> 从“速度 + 稳定性”双维度看，`block-major/fnptr` 是本轮 smoke 的最稳健赢家。
+
+### 5) 与上一轮对比（prev -> latest）
+
+#### 5.1 平台级几何平均加速比（>1 代表本轮更快）
+
+| 平台 | 几何平均加速比 |
+|---|---:|
+| macos-14-arm64 | **1.374x** |
+| ubuntu-latest-x64 | 1.042x |
+| windows-latest-x64 | 0.986x |
+
+#### 5.2 变体级几何平均加速比（跨平台）
+
+| 变体 | 几何平均加速比 |
+|---|---:|
+| block-major/fnptr | **1.304x** |
+| step-major/fnptr | 1.121x |
+| block-major/switch | 1.064x |
+| step-major/switch | 1.020x |
+
+> 结论：总体不存在“补强导致系统性退化”；小幅波动主要来自 runner 噪声，方向上偏正向。
+
+### 6) 风险与结论
+
+1. 仍存在 GitHub Actions 平台提示：`upload-artifact@v5` 在 Node24 强制模式下会显示 Node20 兼容告警（非失败）。  
+2. smoke case 规模较小（4096），对微观差异较敏感，建议把趋势判断以**跨平台聚合**为主，而不是单点极值。  
+3. 当前 CI 补强后结果稳定，建议继续保持：
+   - `ci.yml`：3 平台快速门禁；
+   - `bench-matrix.yml`：手动/定时跑更大规模矩阵并沉淀 artifact。

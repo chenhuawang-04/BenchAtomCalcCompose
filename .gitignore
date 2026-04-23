@@ -33,6 +33,7 @@ bench_*.csv
 bench_*.json
 smoke_*.csv
 ci_artifacts/
+ci_runs/
 
 # Local docs (do not submit, keep README only)
 docs/

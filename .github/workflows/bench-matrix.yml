@@ -1,0 +1,89 @@
+name: bench-matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+jobs:
+  bench:
+    name: bench-${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: windows-latest
+            arch: x64
+          - os: macos-13
+            arch: x64
+          - os: macos-14
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (Release, reproducible)
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBENCHCALC_ENABLE_FAST_MATH=OFF
+          -DBENCHCALC_ENABLE_LLVM_JIT=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run benchmark matrix
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "build/benchcalc",
+            "build/benchcalc.exe",
+            "build/Release/benchcalc.exe"
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            throw "benchcalc executable not found in known output paths."
+          }
+
+          & $exe `
+            --expr "a+b*c/d" `
+            --sizes 65536,262144 `
+            --blocks 128,256 `
+            --warmup 3 `
+            --target-ms 120 `
+            --max-auto-iters 128 `
+            --datasets 3 `
+            --backend std `
+            --no-vm `
+            --no-llvm-jit `
+            --csv "bench_bin_${{ matrix.os }}_${{ matrix.arch }}.csv" `
+            --json "bench_bin_${{ matrix.os }}_${{ matrix.arch }}.json"
+
+          & $exe `
+            --expr "a+b-sin(c)" `
+            --sizes 65536,262144 `
+            --blocks 128,256 `
+            --warmup 3 `
+            --target-ms 120 `
+            --max-auto-iters 128 `
+            --datasets 3 `
+            --backend std `
+            --no-vm `
+            --no-llvm-jit `
+            --csv "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv" `
+            --json "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json"
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            bench_bin_${{ matrix.os }}_${{ matrix.arch }}.csv
+            bench_bin_${{ matrix.os }}_${{ matrix.arch }}.json
+            bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv
+            bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json

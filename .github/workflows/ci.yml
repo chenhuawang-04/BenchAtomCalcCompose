@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: windows-latest
+            arch: x64
+          - os: macos-13
+            arch: x64
+          - os: macos-14
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (Release, portable)
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBENCHCALC_ENABLE_FAST_MATH=OFF
+          -DBENCHCALC_ENABLE_LLVM_JIT=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run smoke benchmark
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "build/benchcalc",
+            "build/benchcalc.exe",
+            "build/Release/benchcalc.exe"
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            throw "benchcalc executable not found in known output paths."
+          }
+
+          & $exe `
+            --expr "a+b-sin(c)" `
+            --sizes 4096 `
+            --blocks 128 `
+            --warmup 2 `
+            --iters 5 `
+            --datasets 2 `
+            --backend std `
+            --no-vm `
+            --no-llvm-jit `
+            --no-verify `
+            --csv "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
+
+      - name: Upload smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.os }}-${{ matrix.arch }}
+          path: smoke_${{ matrix.os }}_${{ matrix.arch }}.csv

@@ -37,7 +37,7 @@ jobs:
   bench:
     name: bench-${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || inputs.include_macos13 }}
+    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.include_macos13 == 'true') }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -81,10 +81,10 @@ jobs:
 
           & $exe `
             --expr "a+b*c/d" `
-            --sizes "${{ inputs.sizes || '65536,262144' }}" `
-            --blocks "${{ inputs.blocks || '128,256' }}" `
+            --sizes "${{ github.event.inputs.sizes || '65536,262144' }}" `
+            --blocks "${{ github.event.inputs.blocks || '128,256' }}" `
             --warmup 3 `
-            --target-ms "${{ inputs.target_ms || '120' }}" `
+            --target-ms "${{ github.event.inputs.target_ms || '120' }}" `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -95,10 +95,10 @@ jobs:
 
           & $exe `
             --expr "a+b-sin(c)" `
-            --sizes "${{ inputs.sizes || '65536,262144' }}" `
-            --blocks "${{ inputs.blocks || '128,256' }}" `
+            --sizes "${{ github.event.inputs.sizes || '65536,262144' }}" `
+            --blocks "${{ github.event.inputs.blocks || '128,256' }}" `
             --warmup 3 `
-            --target-ms "${{ inputs.target_ms || '120' }}" `
+            --target-ms "${{ github.event.inputs.target_ms || '120' }}" `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -146,5 +146,5 @@ jobs:
           $summary += "| a+b*c/d | $($bestBin.variant) | $($bestBin.median_ns) | $($bestBin.verified) |"
           $summary += "| a+b-sin(c) | $($bestMix.variant) | $($bestMix.median_ns) | $($bestMix.verified) |"
           $summary += ""
-          $summary += "Config: sizes=${{ inputs.sizes || '65536,262144' }}, blocks=${{ inputs.blocks || '128,256' }}, target-ms=${{ inputs.target_ms || '120' }}"
+          $summary += "Config: sizes=${{ github.event.inputs.sizes || '65536,262144' }}, blocks=${{ github.event.inputs.blocks || '128,256' }}, target-ms=${{ github.event.inputs.target_ms || '120' }}"
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

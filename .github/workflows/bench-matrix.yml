@@ -15,11 +15,6 @@ on:
         description: "Target milliseconds per case"
         required: false
         default: "120"
-      include_macos13:
-        description: "Include macOS-13 x64 runner"
-        required: false
-        type: boolean
-        default: false
   schedule:
     - cron: "0 2 * * 1"
 
@@ -37,7 +32,6 @@ jobs:
   bench:
     name: bench-${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.include_macos13 == 'true') }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -46,8 +40,6 @@ jobs:
           - os: ubuntu-latest
             arch: x64
           - os: windows-latest
-            arch: x64
-          - os: macos-13
             arch: x64
           - os: macos-14
             arch: arm64
@@ -79,12 +71,25 @@ jobs:
             throw "benchcalc executable not found in known output paths."
           }
 
+          $sizes = "${{ github.event.inputs.sizes }}"
+          if ([string]::IsNullOrWhiteSpace($sizes)) {
+            $sizes = "65536,262144"
+          }
+          $blocks = "${{ github.event.inputs.blocks }}"
+          if ([string]::IsNullOrWhiteSpace($blocks)) {
+            $blocks = "128,256"
+          }
+          $targetMs = "${{ github.event.inputs.target_ms }}"
+          if ([string]::IsNullOrWhiteSpace($targetMs)) {
+            $targetMs = "120"
+          }
+
           & $exe `
             --expr "a+b*c/d" `
-            --sizes "${{ github.event.inputs.sizes || '65536,262144' }}" `
-            --blocks "${{ github.event.inputs.blocks || '128,256' }}" `
+            --sizes $sizes `
+            --blocks $blocks `
             --warmup 3 `
-            --target-ms "${{ github.event.inputs.target_ms || '120' }}" `
+            --target-ms $targetMs `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -95,10 +100,10 @@ jobs:
 
           & $exe `
             --expr "a+b-sin(c)" `
-            --sizes "${{ github.event.inputs.sizes || '65536,262144' }}" `
-            --blocks "${{ github.event.inputs.blocks || '128,256' }}" `
+            --sizes $sizes `
+            --blocks $blocks `
             --warmup 3 `
-            --target-ms "${{ github.event.inputs.target_ms || '120' }}" `
+            --target-ms $targetMs `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -146,5 +151,11 @@ jobs:
           $summary += "| a+b*c/d | $($bestBin.variant) | $($bestBin.median_ns) | $($bestBin.verified) |"
           $summary += "| a+b-sin(c) | $($bestMix.variant) | $($bestMix.median_ns) | $($bestMix.verified) |"
           $summary += ""
-          $summary += "Config: sizes=${{ github.event.inputs.sizes || '65536,262144' }}, blocks=${{ github.event.inputs.blocks || '128,256' }}, target-ms=${{ github.event.inputs.target_ms || '120' }}"
+          $sizes = "${{ github.event.inputs.sizes }}"
+          if ([string]::IsNullOrWhiteSpace($sizes)) { $sizes = "65536,262144" }
+          $blocks = "${{ github.event.inputs.blocks }}"
+          if ([string]::IsNullOrWhiteSpace($blocks)) { $blocks = "128,256" }
+          $targetMs = "${{ github.event.inputs.target_ms }}"
+          if ([string]::IsNullOrWhiteSpace($targetMs)) { $targetMs = "120" }
+          $summary += "Config: sizes=$sizes, blocks=$blocks, target-ms=$targetMs"
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

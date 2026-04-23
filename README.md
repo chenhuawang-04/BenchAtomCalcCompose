@@ -182,14 +182,23 @@ src/
    - 平台/架构：
      - `ubuntu-latest` (x64)
      - `windows-latest` (x64)
-     - `macos-13` (x64)
      - `macos-14` (arm64)
    - 产物：每个 runner 的 smoke CSV
+   - 强化项：
+     - 并发控制（同分支自动取消旧 CI）
+     - `timeout-minutes` 防挂起
+     - `GITHUB_STEP_SUMMARY` 自动输出 smoke 最优结果
 
 2. `bench-matrix.yml`
    - 在 `workflow_dispatch`（手动）和每周定时触发
    - 目标：多平台多架构基准跑数并上传结果
-   - 同样覆盖上述 4 组 OS/架构
+   - 默认覆盖：
+     - `ubuntu-latest` (x64)
+     - `windows-latest` (x64)
+     - `macos-14` (arm64)
+   - `macos-13` (x64) 仅在每周定时或手动开启 `include_macos13=true` 时参与（避免日常排队阻塞）
+   - 支持手动参数：`sizes`、`blocks`、`target_ms`
    - 产物：每个 runner 的 CSV/JSON benchmark 结果
+   - `GITHUB_STEP_SUMMARY` 自动输出两条表达式的最优变体
 
 > CI 默认使用 `std` backend，且关闭 LLVM JIT/fast_math，保证跨平台可重复和依赖最小化。

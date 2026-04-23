@@ -5,10 +5,21 @@ on:
     branches: [ main, master ]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build-and-smoke:
     name: ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -17,14 +28,12 @@ jobs:
             arch: x64
           - os: windows-latest
             arch: x64
-          - os: macos-13
-            arch: x64
           - os: macos-14
             arch: arm64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure (Release, portable)
         run: >
@@ -63,7 +72,32 @@ jobs:
             --csv "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
 
       - name: Upload smoke artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: smoke-${{ matrix.os }}-${{ matrix.arch }}
           path: smoke_${{ matrix.os }}_${{ matrix.arch }}.csv
+          retention-days: 14
+
+      - name: Smoke summary
+        shell: pwsh
+        run: |
+          $csv = "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
+          if (-not (Test-Path $csv)) {
+            throw "Smoke CSV not found: $csv"
+          }
+
+          $rows = Import-Csv $csv
+          if (-not $rows -or $rows.Count -eq 0) {
+            throw "Smoke CSV has no data: $csv"
+          }
+
+          $best = $rows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+          $summary = @()
+          $summary += "### Smoke Summary (${{ matrix.os }}-${{ matrix.arch }})"
+          $summary += ""
+          $summary += "| Best Variant | Median(ns) | Verify |"
+          $summary += "|---|---:|---:|"
+          $summary += "| $($best.variant) | $($best.median_ns) | $($best.verified) |"
+          $summary += ""
+          $summary += "Rows: $($rows.Count)"
+          $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

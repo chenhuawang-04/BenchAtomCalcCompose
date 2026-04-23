@@ -2,13 +2,42 @@ name: bench-matrix
 
 on:
   workflow_dispatch:
+    inputs:
+      sizes:
+        description: "Vector sizes (comma-separated)"
+        required: false
+        default: "65536,262144"
+      blocks:
+        description: "Block sizes (comma-separated)"
+        required: false
+        default: "128,256"
+      target_ms:
+        description: "Target milliseconds per case"
+        required: false
+        default: "120"
+      include_macos13:
+        description: "Include macOS-13 x64 runner"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "0 2 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   bench:
     name: bench-${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
+    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || inputs.include_macos13 }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -25,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure (Release, reproducible)
         run: >
@@ -52,10 +81,10 @@ jobs:
 
           & $exe `
             --expr "a+b*c/d" `
-            --sizes 65536,262144 `
-            --blocks 128,256 `
+            --sizes "${{ inputs.sizes || '65536,262144' }}" `
+            --blocks "${{ inputs.blocks || '128,256' }}" `
             --warmup 3 `
-            --target-ms 120 `
+            --target-ms "${{ inputs.target_ms || '120' }}" `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -66,10 +95,10 @@ jobs:
 
           & $exe `
             --expr "a+b-sin(c)" `
-            --sizes 65536,262144 `
-            --blocks 128,256 `
+            --sizes "${{ inputs.sizes || '65536,262144' }}" `
+            --blocks "${{ inputs.blocks || '128,256' }}" `
             --warmup 3 `
-            --target-ms 120 `
+            --target-ms "${{ inputs.target_ms || '120' }}" `
             --max-auto-iters 128 `
             --datasets 3 `
             --backend std `
@@ -79,7 +108,7 @@ jobs:
             --json "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json"
 
       - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bench-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -87,3 +116,35 @@ jobs:
             bench_bin_${{ matrix.os }}_${{ matrix.arch }}.json
             bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv
             bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json
+          retention-days: 30
+
+      - name: Bench summary
+        shell: pwsh
+        run: |
+          function Get-BestLine($csvPath) {
+            $rows = Import-Csv $csvPath
+            if (-not $rows -or $rows.Count -eq 0) {
+              throw "No rows in $csvPath"
+            }
+            return $rows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+          }
+
+          $binCsv = "bench_bin_${{ matrix.os }}_${{ matrix.arch }}.csv"
+          $mixCsv = "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv"
+          if (-not (Test-Path $binCsv) -or -not (Test-Path $mixCsv)) {
+            throw "Expected benchmark CSV files not found."
+          }
+
+          $bestBin = Get-BestLine $binCsv
+          $bestMix = Get-BestLine $mixCsv
+
+          $summary = @()
+          $summary += "### Bench Summary (${{ matrix.os }}-${{ matrix.arch }})"
+          $summary += ""
+          $summary += "| Case | Best Variant | Median(ns) | Verify |"
+          $summary += "|---|---|---:|---:|"
+          $summary += "| a+b*c/d | $($bestBin.variant) | $($bestBin.median_ns) | $($bestBin.verified) |"
+          $summary += "| a+b-sin(c) | $($bestMix.variant) | $($bestMix.median_ns) | $($bestMix.verified) |"
+          $summary += ""
+          $summary += "Config: sizes=${{ inputs.sizes || '65536,262144' }}, blocks=${{ inputs.blocks || '128,256' }}, target-ms=${{ inputs.target_ms || '120' }}"
+          $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

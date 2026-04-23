@@ -285,3 +285,168 @@ src/
 3. 当前 CI 补强后结果稳定，建议继续保持：
    - `ci.yml`：3 平台快速门禁；
    - `bench-matrix.yml`：手动/定时跑更大规模矩阵并沉淀 artifact。
+
+### 7) bench-matrix（手动触发）结果摘要
+
+本轮已手动触发一次 bench 矩阵工作流：
+
+- Workflow: `bench-matrix`
+- Run ID: `24844464896`
+- 结论：`success`
+- 覆盖平台：ubuntu x64 / windows x64 / macOS arm64
+- 数据条目：96
+- Verify：**96 / 96 全通过**
+
+#### 7.1 各平台分表达式最优（按 case 相对比值几何均值）
+
+| 平台 | 表达式组 | 最优变体 | 几何均值比值（越接近 1 越好） | case 胜出分布（top） |
+|---|---|---|---:|---|
+| macos-14-arm64 | `a+b*c/d` | block-major/fnptr | **1.001** | block-major/fnptr(3/4) |
+| macos-14-arm64 | `a+b-sin(c)` | block-major/fnptr | **1.003** | 四变体各 1 次 |
+| ubuntu-latest-x64 | `a+b*c/d` | block-major/switch | **1.021** | block-major/switch(2), block-major/fnptr(2) |
+| ubuntu-latest-x64 | `a+b-sin(c)` | block-major/fnptr | **1.001** | block-major/fnptr(3/4) |
+| windows-latest-x64 | `a+b*c/d` | block-major/fnptr | **1.000** | block-major/fnptr(4/4) |
+| windows-latest-x64 | `a+b-sin(c)` | block-major/switch | **1.000** | block-major/switch(4/4) |
+
+#### 7.2 跨平台全局排名（按 case 相对比值几何均值）
+
+| 表达式组 | 第1名 | 第2名 | 第3名 | 第4名 |
+|---|---|---|---|---|
+| `a+b*c/d` | block-major/fnptr (**1.010**) | block-major/switch (1.018) | step-major/fnptr (1.107) | step-major/switch (1.115) |
+| `a+b-sin(c)` | block-major/fnptr (**1.002**) | step-major/fnptr (1.007) | block-major/switch (1.008) | step-major/switch (1.008) |
+
+> bench 矩阵的总体趋势与 smoke 一致：**block-major + fnptr/switch** 是当前跨平台最稳健的一档实现，`step-major/switch` 更适合作为保守基线而非最优默认。
+
+### 8) bench-matrix 深度统计（96 条记录，全量汇总）
+
+为了把“结果可读”升级成“可审计”，这里给出统一统计口径下的全量聚合（基于 `bench_runs/` 中 3 平台 × 2 表达式 × 2 长度 × 2 block × 4 变体，共 96 条记录）。
+
+#### 8.1 统计定义（严谨口径）
+
+记每个 case 为 `(platform, expr, N, block)`，每个变体测得 `median_ns = t(v, case)`。
+
+- **case 相对比值**：`r(v, case) = t(v, case) / min_u t(u, case)`  
+  - `r=1` 代表该 case 最优；越接近 1 越好。
+- **全局排名指标**：对所有 case 的 `r` 取几何均值（`geo_ratio`）。
+- **基线加速比**：`speedup(v, case) = t(step-major/switch, case) / t(v, case)`  
+  - 大于 1 代表优于基线。
+
+#### 8.2 数据覆盖与质量
+
+| 项目 | 结果 |
+|---|---|
+| 数据来源 | `bench-matrix` run `24844464896` artifact |
+| 平台 | `ubuntu-latest-x64` / `windows-latest-x64` / `macos-14-arm64` |
+| 表达式 | `a+b*c/d`、`a+b-sin(c)` |
+| 向量长度 | `65536`、`262144` |
+| block | `128`、`256` |
+| 变体数 | 4（step-major/switch、step-major/fnptr、block-major/switch、block-major/fnptr） |
+| 总记录数 | 96 |
+| Verify 通过率 | **96/96 = 100%** |
+
+#### 8.3 全局聚合总表（跨平台+跨表达式）
+
+| 变体 | geo_ratio（越小越好） | median_ns 几何均值 | MOps/s 平均 | CV% 平均 | CV% P90 |
+|---|---:|---:|---:|---:|---:|
+| block-major/fnptr | **1.006** | **279,690.7** | **3,503.31** | 8.11 | 16.01 |
+| block-major/switch | 1.013 | 281,581.0 | 3,480.09 | 7.59 | 16.32 |
+| step-major/fnptr | 1.056 | 293,474.8 | 3,200.61 | 6.83 | 14.85 |
+| step-major/switch | 1.060 | 294,756.3 | 3,182.12 | **5.93** | **10.08** |
+
+解读：
+
+- **性能第一梯队**：`block-major/fnptr`、`block-major/switch`（两者都明显优于 step-major 两种）。
+- **稳定性第一梯队（CV）**：`step-major/switch` 最稳，但速度最慢；属于“保守基线”而非“性能默认值”。
+
+#### 8.4 相对基线加速（基线=`step-major/switch`）
+
+| 变体 | 几何平均加速比 | 算术平均加速比 | 最小 | 最大 |
+|---|---:|---:|---:|---:|
+| block-major/fnptr | **1.054x** | 1.055x | 0.994x | 1.172x |
+| block-major/switch | 1.047x | 1.048x | 0.971x | 1.146x |
+| step-major/fnptr | 1.004x | 1.005x | 0.957x | 1.039x |
+| step-major/switch | 1.000x | 1.000x | 1.000x | 1.000x |
+
+解读：
+
+- 以几何平均看，`block-major/fnptr` 相对保守基线有约 **5.4%** 的稳定收益。
+- `step-major/fnptr` 的收益非常有限，说明函数指针本身不是关键，**关键是调度顺序（block-major）**。
+
+#### 8.5 平台维度“夺冠次数”（每平台共 8 个 case）
+
+| 平台 | block-major/fnptr | block-major/switch | step-major/fnptr | step-major/switch |
+|---|---:|---:|---:|---:|
+| macos-14-arm64 | 4 | 2 | 1 | 1 |
+| ubuntu-latest-x64 | 5 | 2 | 0 | 1 |
+| windows-latest-x64 | 4 | 4 | 0 | 0 |
+
+解读：
+
+- `block-major/fnptr` 在三个平台都保持高胜率；
+- Windows 上 `block-major/switch` 与 `block-major/fnptr` 并列（4:4），说明该平台上两者差距接近噪声带。
+
+#### 8.6 block 大小敏感性（`ratio = median_ns@256 / median_ns@128`，<1 表示 256 更快）
+
+| 变体 | ratio 几何均值 | 最小 | 最大 |
+|---|---:|---:|---:|
+| block-major/switch | **0.947** | 0.875 | 1.031 |
+| step-major/fnptr | 0.959 | 0.875 | 1.005 |
+| step-major/switch | 0.960 | 0.884 | 1.005 |
+| block-major/fnptr | 0.961 | 0.884 | 1.012 |
+
+解读：
+
+- 在本数据范围内，`block=256` 相比 `128` 通常有 **约 4%~5%** 的收益；
+- 个别 case 会反转（ratio > 1），说明 block 并非全局常量，建议保留 sweep。
+
+#### 8.7 规模扩展性（`N=262144 / 65536`，理论线性约 4x）
+
+| 变体 | 比值几何均值 | 最小 | 最大 |
+|---|---:|---:|---:|
+| step-major/fnptr | **4.058x** | 3.864x | 4.448x |
+| step-major/switch | 4.068x | 3.811x | 4.449x |
+| block-major/fnptr | 4.098x | 3.835x | 4.498x |
+| block-major/switch | 4.124x | 3.964x | 4.473x |
+
+解读：
+
+- 四个变体都接近线性扩展（4x 附近），未出现异常超线性退化；
+- `step-major` 两种在该组数据里略更接近理想线性，但绝对性能仍落后于 `block-major`。
+
+#### 8.8 表达式复杂度差异（`a+b-sin(c)` 相对 `a+b*c/d`）
+
+`mix_over_bin = median_ns(a+b-sin(c)) / median_ns(a+b*c/d)`（同平台/同 N/同 block/同变体对齐）
+
+| 变体 | 几何均值 | 最小 | 最大 |
+|---|---:|---:|---:|
+| step-major/switch | **20.125x** | 16.786x | 23.811x |
+| step-major/fnptr | 20.256x | 17.220x | 23.905x |
+| block-major/switch | 22.044x | 17.858x | 25.839x |
+| block-major/fnptr | 22.080x | 18.647x | 26.346x |
+
+解读：
+
+- 在 `std::sin` 参与下，`a+b-sin(c)` 的时间量级远高于纯 `+ - * /`；
+- 当一元函数成本占主导时，变体差距会被压缩到很小区间（这也是 `a+b-sin(c)` 中四变体接近的根因）。
+
+### 9) 结论（当前阶段的默认推荐）
+
+综合速度、跨平台一致性、以及工程可维护性：
+
+1. **默认推荐**：`block-major/fnptr`
+   - 跨平台全局 `geo_ratio` 最优（1.006）；
+   - 相对基线稳定有约 5% 级别收益；
+   - 与你的“运行时动态排布函数”目标一致，便于后续扩展更多算子。
+2. **保守备选**：`block-major/switch`
+   - 性能与第一名非常接近（1.013）；
+   - 在某些平台（尤其 Windows）几乎可与 `fnptr` 打平，调试可读性更好。
+3. **基线用途**：`step-major/switch`
+   - 不作为默认最快路径；
+   - 仍建议保留作为长期回归基线（最稳、最易解释）。
+
+### 10) 下一步（为了让结论更“硬”）
+
+- 在 `bench-matrix` 增加更大 `N`（例如 `1M+`）与更多 block（如 `64/128/256/512`）；
+- 单独做 `std` vs `fast_math` 对照矩阵，分离“调度收益”和“函数实现收益”；
+- 新增 LLVM JIT 组与非 JIT 组同口径对比表（统一 warmup、统一 target-ms、统一验证开关）；
+- 引入重复 run（多次 workflow_dispatch）后做置信区间（如 bootstrap CI）评估，避免一次性样本过拟合。

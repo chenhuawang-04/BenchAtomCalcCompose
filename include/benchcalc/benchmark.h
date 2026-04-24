@@ -21,6 +21,7 @@ struct BenchmarkConfig {
     double target_case_ms = 0.0;            // >0 时自动估算迭代次数
     std::size_t max_auto_iterations = 256;  // 自动估算上限
     std::size_t dataset_pool_size = 3;      // 轮换数据集，减少固定缓存形态偏置
+    std::size_t repeat_runs = 1;            // 外层重复次数（用于稳定性/置信区间分析）
     std::size_t thread_count = 1;           // 执行线程数（>=1）
     bool include_vm_variants = true;        // 是否包含解释执行基线
     bool include_parallel_variants = false; // 是否包含并行调度变体（thread_count>1 时生效）
@@ -49,6 +50,7 @@ struct BenchmarkResult {
     std::string variant_name;
     std::size_t length = 0;
     std::size_t block_size = 0;
+    std::size_t repeat_index = 0;
 
     Statistics stats;
     std::size_t measured_iterations = 0;

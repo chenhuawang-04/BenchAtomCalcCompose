@@ -44,8 +44,12 @@
 
 - `step-major/switch`
 - `step-major/fnptr`
+- `step-major/global-void-offset`（实验：`void()` + 全局参数流起始索引）
+- `step-major/global-void-signature`（实验：`void()` + 全局签名查参）
 - `block-major/switch`
 - `block-major/fnptr`
+- `block-major/global-void-offset`（实验：`void()` + 全局参数流起始索引）
+- `block-major/global-void-signature`（实验：`void()` + 全局签名查参）
 - `rpn-vm/switch`（元素级解释执行基线）
 - `rpn-vm/fnptr`（元素级解释 + 函数指针分发）
 - 可选并行变体（`--parallel-variants --threads N`）：
@@ -56,6 +60,23 @@
 
 - `std`（`std::sin/std::sqrt`）
 - `fast_math`（使用你的 `fast_math`）
+
+#### `global-void-*` 两个子方案的语义
+
+为验证“统一 `void()` 声明 + 运行时取参”方案，新增两个严格可比的子方案：
+
+1. `global-void-offset`
+   - 调度器在绑定阶段计算每一步在全局参数槽位流里的 `arg_begin`；
+   - 执行时函数仅通过 `arg_begin` + 自身元数（unary/binary/copy）取参数。
+2. `global-void-signature`
+   - 函数通过全局签名管理器，用 `signature -> arg_begin` 映射查参数区间；
+   - 调度器仅维护签名映射，不直接向函数传参数索引。
+
+公平性保证：
+
+- 与 `switch/fnptr` 使用同一 `ExecutionPlan`、同一块大小、同一数据集池；
+- 同一 warmup / measured iterations / verify 流程；
+- 仅替换“参数定位与分发路径”，其余计算内核保持一致。
 
 ### 5) LLVM JIT 执行组（新增）
 
@@ -102,6 +123,14 @@ cmake -S . -B build_ninja -G Ninja -DBENCHCALC_ENABLE_LLVM_JIT=ON -DBENCHCALC_LL
 .\build_ninja\benchcalc.exe --expr "a+b-sin(c)" --sizes 1024,8192,65536 --blocks 32,64,128 --warmup 4 --iters 20 --backend fast
 ```
 
+1-10 元更复杂场景（推荐用于调度稳定性回归）：
+
+```powershell
+.\build_ninja\benchcalc.exe --arity-suite-max 10 --arity-suite-mode complex --sizes 4096,65536 --blocks 64,128,256 --target-ms 120 --repeats 3 --no-vm --no-llvm-jit
+```
+
+说明：`complex` 模式下每个元数会自动生成 3 类表达式（链式混合 / 平衡归约 / unary-dense），因此 `1..10` 共 30 条表达式。
+
 并行变体示例：
 
 ```powershell
@@ -118,6 +147,12 @@ cmake -S . -B build_ninja -G Ninja -DBENCHCALC_ENABLE_LLVM_JIT=ON -DBENCHCALC_LL
 - `--target-ms` 自动估算每个 case 的迭代次数（目标耗时，毫秒）
 - `--max-auto-iters` 自动估算时的上限
 - `--datasets` 数据集池大小（轮换输入，降低固定缓存形态偏置）
+- `--repeats` 外层重复次数（用于稳定性/置信区间分析）
+- `--arity-suite-max` 生成 `1..N` 元自动场景（不填 `--expr` 也可运行）
+- `--arity-suite-mode sum|complex|both`
+  - `sum`：每个元数 1 条纯加法扩展表达式
+  - `complex`：每个元数 3 条复杂表达式（链式/平衡树/unary-dense）
+  - `both`：同时包含 `sum + complex`
 - `--threads` 并行线程数（用于 `/mt` 变体）
 - `--parallel-variants` 启用并行变体
 - `--no-vm` 关闭 RPN VM 基线变体
@@ -139,6 +174,9 @@ cmake -S . -B build_ninja -G Ninja -DBENCHCALC_ENABLE_LLVM_JIT=ON -DBENCHCALC_LL
 - `Verify`：与参考输出比对结果
 - `Best variant by case`：每个 `(N, block)` 的最快方案汇总
 - `Speedup vs baseline`：相对 `step-major/switch` 的平均加速比
+- `Repeat stability summary vs baseline [step-major/fnptr]`：
+  - `GeoSpeed`（几何平均速度比）
+  - `CI95 Low/High`（对数域 95% 置信区间）
 - 启动信息中会给出 LLVM JIT 编译支持状态与描述
 
 ## 目录结构
@@ -177,8 +215,11 @@ src/
 仓库内置两套工作流（位于 `.github/workflows/`）：
 
 1. `ci.yml`
-   - 在 `push / pull_request` 触发
+   - 在 `push / pull_request / workflow_dispatch` 触发
    - 目标：多平台编译 + 快速 smoke benchmark
+   - smoke 用例：
+     - 核心表达式：`a+b-sin(c)`
+     - arity 复杂套件：`--arity-suite-max 10 --arity-suite-mode complex`
    - 平台/架构：
      - `ubuntu-latest` (x64)
      - `windows-latest` (x64)
@@ -197,9 +238,9 @@ src/
      - `windows-latest` (x64)
      - `macos-14` (arm64)
    - `macos-13` (x64) 仅在每周定时或手动开启 `include_macos13=true` 时参与（避免日常排队阻塞）
-   - 支持手动参数：`sizes`、`blocks`、`target_ms`
+   - 支持手动参数：`sizes`、`blocks`、`target_ms`、`repeats`、`run_arity_suite`、`arity_suite_max`
    - 产物：每个 runner 的 CSV/JSON benchmark 结果
-   - `GITHUB_STEP_SUMMARY` 自动输出两条表达式的最优变体
+   - `GITHUB_STEP_SUMMARY` 自动输出核心两条表达式 +（可选）arity 套件最优变体
 
 > CI 默认使用 `std` backend，且关闭 LLVM JIT/fast_math，保证跨平台可重复和依赖最小化。
 

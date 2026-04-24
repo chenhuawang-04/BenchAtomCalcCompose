@@ -16,6 +16,8 @@ enum class ScheduleMode {
 enum class DispatchMode {
     SwitchDispatch,
     FunctionPointerDispatch,
+    GlobalVoidOffsetDispatch,     // void() + 全局参数流（由调度器设置起始索引）
+    GlobalVoidSignatureDispatch,  // void() + 全局管理器（函数用签名查参数区间）
 };
 
 enum class ExecutionModel {
@@ -37,10 +39,20 @@ struct RuntimeStep {
     StepKind kind = StepKind::Copy;
     std::uint16_t dst = 0;
     std::uint16_t src = 0;
+    std::uint32_t arg_begin = 0;   // 在 global_arg_slots 里的起始位置
+    std::uint32_t signature = 0;   // 全局唯一签名（用于 signature dispatch）
 
     CopyKernelFn copy = nullptr;
     UnaryKernelFn unary = nullptr;
     BinaryKernelFn binary = nullptr;
+    void (*global_void_offset)() = nullptr;
+    void (*global_void_signature)() = nullptr;
+};
+
+struct RuntimeDispatchData {
+    std::vector<RuntimeStep> steps;
+    std::vector<std::uint16_t> global_arg_slots;       // 线性参数槽位流
+    std::vector<std::uint32_t> signature_to_arg_begin; // signature -> arg_begin
 };
 
 struct ExecuteRuntimeOptions {
@@ -53,11 +65,11 @@ std::vector<ExecutorSpec> default_executors(
     bool include_llvm_jit_variants,
     std::size_t thread_count
 );
-std::vector<RuntimeStep> bind_runtime_steps(const ExecutionPlan& plan, const KernelTable& kernels);
+RuntimeDispatchData bind_runtime_dispatch_data(const ExecutionPlan& plan, const KernelTable& kernels);
 
 void execute_plan(
     const ExecutionPlan& plan,
-    const std::vector<RuntimeStep>& runtime_steps,
+    const RuntimeDispatchData& runtime,
     const KernelTable& kernels,
     const KernelConfig& kernel_cfg,
     const ExecutorSpec& executor,

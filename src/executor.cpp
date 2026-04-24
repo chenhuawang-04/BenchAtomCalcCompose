@@ -113,6 +113,92 @@ BinaryKernelFn binary_from_op(OpCode op, const KernelTable& kernels) {
     return nullptr;
 }
 
+// ============================
+// Global void() dispatch context
+// ============================
+//
+// 目标：模拟“统一函数声明为 void()，函数内部到全局参数区取参”的两类方案：
+// 1) offset：调度器给出 arg_begin
+// 2) signature：函数通过 signature 向全局管理器查 arg_begin
+
+struct GlobalVoidCallContext {
+    struct GlobalSignatureManager {
+        const std::uint32_t* start_by_signature = nullptr;
+
+        inline std::uint32_t lookup(std::uint32_t signature) const {
+            return start_by_signature[signature];
+        }
+    };
+
+    const RuntimeStep* step = nullptr;
+    const KernelConfig* cfg = nullptr;
+    float** buffers = nullptr;
+    const std::uint16_t* global_arg_slots = nullptr;
+    const GlobalSignatureManager* manager = nullptr;
+    std::uint32_t arg_begin = 0;
+    std::uint32_t signature = 0;
+    std::size_t offset = 0;
+    std::size_t count = 0;
+};
+
+thread_local GlobalVoidCallContext g_void_ctx{};
+
+inline std::uint32_t lookup_arg_begin_by_signature(std::uint32_t signature) {
+    return g_void_ctx.manager->lookup(signature);
+}
+
+inline void invoke_copy_with_arg_begin(std::uint32_t arg_begin) {
+    const auto& c = g_void_ctx;
+    const std::uint16_t dst_slot = c.global_arg_slots[arg_begin + 0];
+    const std::uint16_t src_slot = c.global_arg_slots[arg_begin + 1];
+    float* dst = c.buffers[dst_slot] + c.offset;
+    const float* src = c.buffers[src_slot] + c.offset;
+    c.step->copy(dst, src, c.count, *c.cfg);
+}
+
+inline void invoke_unary_with_arg_begin(std::uint32_t arg_begin) {
+    const auto& c = g_void_ctx;
+    const std::uint16_t dst_slot = c.global_arg_slots[arg_begin + 0];
+    float* dst = c.buffers[dst_slot] + c.offset;
+    c.step->unary(dst, c.count, *c.cfg);
+}
+
+inline void invoke_binary_with_arg_begin(std::uint32_t arg_begin) {
+    const auto& c = g_void_ctx;
+    const std::uint16_t dst_slot = c.global_arg_slots[arg_begin + 0];
+    const std::uint16_t src_slot = c.global_arg_slots[arg_begin + 1];
+    float* dst = c.buffers[dst_slot] + c.offset;
+    const float* src = c.buffers[src_slot] + c.offset;
+    c.step->binary(dst, src, c.count, *c.cfg);
+}
+
+void gv_offset_copy() {
+    invoke_copy_with_arg_begin(g_void_ctx.arg_begin);
+}
+
+void gv_offset_unary() {
+    invoke_unary_with_arg_begin(g_void_ctx.arg_begin);
+}
+
+void gv_offset_binary() {
+    invoke_binary_with_arg_begin(g_void_ctx.arg_begin);
+}
+
+void gv_signature_copy() {
+    const std::uint32_t arg_begin = lookup_arg_begin_by_signature(g_void_ctx.signature);
+    invoke_copy_with_arg_begin(arg_begin);
+}
+
+void gv_signature_unary() {
+    const std::uint32_t arg_begin = lookup_arg_begin_by_signature(g_void_ctx.signature);
+    invoke_unary_with_arg_begin(arg_begin);
+}
+
+void gv_signature_binary() {
+    const std::uint32_t arg_begin = lookup_arg_begin_by_signature(g_void_ctx.signature);
+    invoke_binary_with_arg_begin(arg_begin);
+}
+
 void run_step_with_switch(
     const PlanStep& step,
     const KernelTable& kernels,
@@ -178,6 +264,47 @@ void run_step_with_fn(
     }
 
     throw std::runtime_error("Unknown step kind in function-pointer dispatcher");
+}
+
+void run_step_with_global_void_offset(
+    const RuntimeStep& step,
+    const KernelConfig& cfg,
+    float** buffers,
+    const std::uint16_t* global_arg_slots,
+    std::size_t offset,
+    std::size_t count
+) {
+    g_void_ctx.step = &step;
+    g_void_ctx.cfg = &cfg;
+    g_void_ctx.buffers = buffers;
+    g_void_ctx.global_arg_slots = global_arg_slots;
+    g_void_ctx.manager = nullptr;
+    g_void_ctx.arg_begin = step.arg_begin;
+    g_void_ctx.signature = 0;
+    g_void_ctx.offset = offset;
+    g_void_ctx.count = count;
+    step.global_void_offset();
+}
+
+void run_step_with_global_void_signature(
+    const RuntimeStep& step,
+    const KernelConfig& cfg,
+    float** buffers,
+    const std::uint16_t* global_arg_slots,
+    const GlobalVoidCallContext::GlobalSignatureManager& manager,
+    std::size_t offset,
+    std::size_t count
+) {
+    g_void_ctx.step = &step;
+    g_void_ctx.cfg = &cfg;
+    g_void_ctx.buffers = buffers;
+    g_void_ctx.global_arg_slots = global_arg_slots;
+    g_void_ctx.manager = &manager;
+    g_void_ctx.arg_begin = 0;
+    g_void_ctx.signature = step.signature;
+    g_void_ctx.offset = offset;
+    g_void_ctx.count = count;
+    step.global_void_signature();
 }
 
 template <typename Fn>
@@ -255,8 +382,12 @@ std::vector<ExecutorSpec> default_executors(
     std::vector<ExecutorSpec> out = {
         {"step-major/switch", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::SwitchDispatch, false},
         {"step-major/fnptr", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::FunctionPointerDispatch, false},
+        {"step-major/global-void-offset", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::GlobalVoidOffsetDispatch, false},
+        {"step-major/global-void-signature", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::GlobalVoidSignatureDispatch, false},
         {"block-major/switch", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::SwitchDispatch, false},
         {"block-major/fnptr", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::FunctionPointerDispatch, false},
+        {"block-major/global-void-offset", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::GlobalVoidOffsetDispatch, false},
+        {"block-major/global-void-signature", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::GlobalVoidSignatureDispatch, false},
     };
 
     if (include_vm_variants) {
@@ -272,8 +403,12 @@ std::vector<ExecutorSpec> default_executors(
     if (include_parallel_variants && thread_count > 1) {
         out.push_back({"step-major/switch/mt", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::SwitchDispatch, true});
         out.push_back({"step-major/fnptr/mt", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::FunctionPointerDispatch, true});
+        out.push_back({"step-major/global-void-offset/mt", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::GlobalVoidOffsetDispatch, true});
+        out.push_back({"step-major/global-void-signature/mt", ExecutionModel::CompiledPlan, ScheduleMode::StepMajor, DispatchMode::GlobalVoidSignatureDispatch, true});
         out.push_back({"block-major/switch/mt", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::SwitchDispatch, true});
         out.push_back({"block-major/fnptr/mt", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::FunctionPointerDispatch, true});
+        out.push_back({"block-major/global-void-offset/mt", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::GlobalVoidOffsetDispatch, true});
+        out.push_back({"block-major/global-void-signature/mt", ExecutionModel::CompiledPlan, ScheduleMode::BlockMajor, DispatchMode::GlobalVoidSignatureDispatch, true});
         if (include_llvm_jit_variants) {
             out.push_back({"llvm-jit/scalar/mt", ExecutionModel::LlvmJitScalar, ScheduleMode::BlockMajor, DispatchMode::FunctionPointerDispatch, true});
             out.push_back({"llvm-jit/loop/mt", ExecutionModel::LlvmJitLoop, ScheduleMode::BlockMajor, DispatchMode::FunctionPointerDispatch, true});
@@ -283,35 +418,50 @@ std::vector<ExecutorSpec> default_executors(
     return out;
 }
 
-std::vector<RuntimeStep> bind_runtime_steps(const ExecutionPlan& plan, const KernelTable& kernels) {
-    std::vector<RuntimeStep> runtime;
-    runtime.reserve(plan.steps.size());
+RuntimeDispatchData bind_runtime_dispatch_data(const ExecutionPlan& plan, const KernelTable& kernels) {
+    RuntimeDispatchData runtime;
+    runtime.steps.reserve(plan.steps.size());
+    runtime.signature_to_arg_begin.reserve(plan.steps.size());
 
-    for (const auto& s : plan.steps) {
+    for (std::size_t step_index = 0; step_index < plan.steps.size(); ++step_index) {
+        const auto& s = plan.steps[step_index];
         RuntimeStep r;
         r.kind = s.kind;
         r.dst = s.dst;
         r.src = s.src;
+        r.signature = static_cast<std::uint32_t>(step_index);
+        r.arg_begin = static_cast<std::uint32_t>(runtime.global_arg_slots.size());
+        runtime.global_arg_slots.push_back(r.dst);
+        if (r.kind == StepKind::Copy || r.kind == StepKind::Binary) {
+            runtime.global_arg_slots.push_back(r.src);
+        }
+        runtime.signature_to_arg_begin.push_back(r.arg_begin);
 
         switch (s.kind) {
         case StepKind::Copy:
             r.copy = kernels.copy;
+            r.global_void_offset = &gv_offset_copy;
+            r.global_void_signature = &gv_signature_copy;
             break;
         case StepKind::Unary:
             r.unary = unary_from_op(s.op, kernels);
             if (r.unary == nullptr) {
                 throw std::runtime_error("Failed to bind unary kernel");
             }
+            r.global_void_offset = &gv_offset_unary;
+            r.global_void_signature = &gv_signature_unary;
             break;
         case StepKind::Binary:
             r.binary = binary_from_op(s.op, kernels);
             if (r.binary == nullptr) {
                 throw std::runtime_error("Failed to bind binary kernel");
             }
+            r.global_void_offset = &gv_offset_binary;
+            r.global_void_signature = &gv_signature_binary;
             break;
         }
 
-        runtime.push_back(r);
+        runtime.steps.push_back(r);
     }
 
     return runtime;
@@ -319,7 +469,7 @@ std::vector<RuntimeStep> bind_runtime_steps(const ExecutionPlan& plan, const Ker
 
 void execute_plan(
     const ExecutionPlan& plan,
-    const std::vector<RuntimeStep>& runtime_steps,
+    const RuntimeDispatchData& runtime,
     const KernelTable& kernels,
     const KernelConfig& kernel_cfg,
     const ExecutorSpec& executor,
@@ -459,6 +609,17 @@ void execute_plan(
         return;
     }
 
+    if (runtime.steps.size() != plan.steps.size()) {
+        throw std::runtime_error("Runtime step count does not match plan");
+    }
+
+    float** buffer_ptrs = buffers.data();
+    const std::uint16_t* global_slots_ptr = runtime.global_arg_slots.data();
+    const std::uint32_t* signature_map_ptr = runtime.signature_to_arg_begin.data();
+    const GlobalVoidCallContext::GlobalSignatureManager signature_manager{
+        signature_map_ptr
+    };
+
     if (executor.schedule == ScheduleMode::StepMajor) {
         if (executor.dispatch == DispatchMode::SwitchDispatch) {
             for (const auto& step : plan.steps) {
@@ -474,17 +635,45 @@ void execute_plan(
             return;
         }
 
-        for (const auto& step : runtime_steps) {
-            float* dst = buffers[step.dst];
-            const float* src = (step.kind == StepKind::Unary) ? nullptr : buffers[step.src];
+        if (executor.dispatch == DispatchMode::FunctionPointerDispatch) {
+            for (const auto& step : runtime.steps) {
+                const float* src = (step.kind == StepKind::Unary) ? nullptr : buffers[step.src];
+                float* dst = buffers[step.dst];
 
-            for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
-                const std::size_t offset = chunk_index * chunk;
-                const std::size_t n = std::min(chunk, length - offset);
-                run_step_with_fn(step, kernel_cfg, dst + offset, src ? (src + offset) : nullptr, n);
-            });
+                for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+                    const std::size_t offset = chunk_index * chunk;
+                    const std::size_t n = std::min(chunk, length - offset);
+                    run_step_with_fn(step, kernel_cfg, dst + offset, src ? (src + offset) : nullptr, n);
+                });
+            }
+            return;
         }
-        return;
+
+        if (executor.dispatch == DispatchMode::GlobalVoidOffsetDispatch) {
+            for (const auto& step : runtime.steps) {
+                for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+                    const std::size_t offset = chunk_index * chunk;
+                    const std::size_t n = std::min(chunk, length - offset);
+                    run_step_with_global_void_offset(step, kernel_cfg, buffer_ptrs, global_slots_ptr, offset, n);
+                });
+            }
+            return;
+        }
+
+        if (executor.dispatch == DispatchMode::GlobalVoidSignatureDispatch) {
+            for (const auto& step : runtime.steps) {
+                for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+                    const std::size_t offset = chunk_index * chunk;
+                    const std::size_t n = std::min(chunk, length - offset);
+                    run_step_with_global_void_signature(
+                        step, kernel_cfg, buffer_ptrs, global_slots_ptr, signature_manager, offset, n
+                    );
+                });
+            }
+            return;
+        }
+
+        throw std::runtime_error("Unsupported dispatch mode for step-major");
     }
 
     if (executor.dispatch == DispatchMode::SwitchDispatch) {
@@ -501,16 +690,47 @@ void execute_plan(
         return;
     }
 
-    for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
-        const std::size_t offset = chunk_index * chunk;
-        const std::size_t n = std::min(chunk, length - offset);
+    if (executor.dispatch == DispatchMode::FunctionPointerDispatch) {
+        for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+            const std::size_t offset = chunk_index * chunk;
+            const std::size_t n = std::min(chunk, length - offset);
 
-        for (const auto& step : runtime_steps) {
-            float* dst = buffers[step.dst] + offset;
-            const float* src = (step.kind == StepKind::Unary) ? nullptr : (buffers[step.src] + offset);
-            run_step_with_fn(step, kernel_cfg, dst, src, n);
-        }
-    });
+            for (const auto& step : runtime.steps) {
+                float* dst = buffers[step.dst] + offset;
+                const float* src = (step.kind == StepKind::Unary) ? nullptr : (buffers[step.src] + offset);
+                run_step_with_fn(step, kernel_cfg, dst, src, n);
+            }
+        });
+        return;
+    }
+
+    if (executor.dispatch == DispatchMode::GlobalVoidOffsetDispatch) {
+        for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+            const std::size_t offset = chunk_index * chunk;
+            const std::size_t n = std::min(chunk, length - offset);
+
+            for (const auto& step : runtime.steps) {
+                run_step_with_global_void_offset(step, kernel_cfg, buffer_ptrs, global_slots_ptr, offset, n);
+            }
+        });
+        return;
+    }
+
+    if (executor.dispatch == DispatchMode::GlobalVoidSignatureDispatch) {
+        for_each_chunk(chunk_count, use_parallel, run_opts.thread_count, [&](std::size_t chunk_index) {
+            const std::size_t offset = chunk_index * chunk;
+            const std::size_t n = std::min(chunk, length - offset);
+
+            for (const auto& step : runtime.steps) {
+                run_step_with_global_void_signature(
+                    step, kernel_cfg, buffer_ptrs, global_slots_ptr, signature_manager, offset, n
+                );
+            }
+        });
+        return;
+    }
+
+    throw std::runtime_error("Unsupported dispatch mode for block-major");
 }
 
 } // namespace benchcalc

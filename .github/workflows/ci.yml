@@ -4,6 +4,7 @@ on:
   push:
     branches: [ main, master ]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -71,33 +72,64 @@ jobs:
             --no-verify `
             --csv "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
 
+          & $exe `
+            --arity-suite-max 10 `
+            --arity-suite-mode complex `
+            --sizes 1024 `
+            --blocks 128 `
+            --warmup 1 `
+            --iters 2 `
+            --datasets 1 `
+            --backend std `
+            --no-vm `
+            --no-llvm-jit `
+            --no-verify `
+            --csv "smoke_arity_${{ matrix.os }}_${{ matrix.arch }}.csv"
+
       - name: Upload smoke artifact
         uses: actions/upload-artifact@v5
         with:
           name: smoke-${{ matrix.os }}-${{ matrix.arch }}
-          path: smoke_${{ matrix.os }}_${{ matrix.arch }}.csv
+          path: |
+            smoke_${{ matrix.os }}_${{ matrix.arch }}.csv
+            smoke_arity_${{ matrix.os }}_${{ matrix.arch }}.csv
           retention-days: 14
 
       - name: Smoke summary
         shell: pwsh
         run: |
-          $csv = "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
-          if (-not (Test-Path $csv)) {
-            throw "Smoke CSV not found: $csv"
+          function Import-NonEmptyCsv([string]$path) {
+            if (-not (Test-Path $path)) {
+              throw "CSV not found: $path"
+            }
+            $rows = Import-Csv $path
+            if (-not $rows -or $rows.Count -eq 0) {
+              throw "CSV has no rows: $path"
+            }
+            return $rows
           }
 
-          $rows = Import-Csv $csv
-          if (-not $rows -or $rows.Count -eq 0) {
-            throw "Smoke CSV has no data: $csv"
+          $coreCsv = "smoke_${{ matrix.os }}_${{ matrix.arch }}.csv"
+          $arityCsv = "smoke_arity_${{ matrix.os }}_${{ matrix.arch }}.csv"
+
+          $coreRows = Import-NonEmptyCsv $coreCsv
+          $arityRows = Import-NonEmptyCsv $arityCsv
+
+          $arityExprCount = ($arityRows.expression | Sort-Object -Unique).Count
+          if ($arityExprCount -lt 30) {
+            throw "Arity suite expression coverage too low: expected >=30, actual=$arityExprCount"
           }
 
-          $best = $rows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+          $coreBest = $coreRows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+          $arityBest = $arityRows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+
           $summary = @()
           $summary += "### Smoke Summary (${{ matrix.os }}-${{ matrix.arch }})"
           $summary += ""
-          $summary += "| Best Variant | Median(ns) | Verify |"
-          $summary += "|---|---:|---:|"
-          $summary += "| $($best.variant) | $($best.median_ns) | $($best.verified) |"
+          $summary += "| Case | Best Variant | Median(ns) | Verify | Rows |"
+          $summary += "|---|---|---:|---:|---:|"
+          $summary += "| core: a+b-sin(c) | $($coreBest.variant) | $($coreBest.median_ns) | $($coreBest.verified) | $($coreRows.Count) |"
+          $summary += "| arity suite: 1..10 complex | $($arityBest.variant) | $($arityBest.median_ns) | $($arityBest.verified) | $($arityRows.Count) |"
           $summary += ""
-          $summary += "Rows: $($rows.Count)"
+          $summary += "Arity expressions covered: $arityExprCount"
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

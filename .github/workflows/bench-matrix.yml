@@ -15,6 +15,24 @@ on:
         description: "Target milliseconds per case"
         required: false
         default: "120"
+      repeats:
+        description: "Outer repeat runs (stability)"
+        required: false
+        default: "3"
+      run_arity_suite:
+        description: "Run arity 1..10 complex suite"
+        required: false
+        type: boolean
+        default: true
+      arity_suite_max:
+        description: "Max arity for suite"
+        required: false
+        default: "10"
+      include_macos13:
+        description: "Include macOS 13 x64 runner in manual runs"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: "0 2 * * 1"
 
@@ -31,6 +49,7 @@ env:
 jobs:
   bench:
     name: bench-${{ matrix.os }}-${{ matrix.arch }}
+    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.include_macos13) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -43,6 +62,8 @@ jobs:
             arch: x64
           - os: macos-14
             arch: arm64
+          - os: macos-13
+            arch: x64
 
     steps:
       - name: Checkout
@@ -83,6 +104,18 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($targetMs)) {
             $targetMs = "120"
           }
+          $repeats = "${{ github.event.inputs.repeats }}"
+          if ([string]::IsNullOrWhiteSpace($repeats)) {
+            $repeats = "3"
+          }
+          $runAritySuite = "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_arity_suite) }}"
+          if ([string]::IsNullOrWhiteSpace($runAritySuite)) {
+            $runAritySuite = "true"
+          }
+          $aritySuiteMax = "${{ github.event.inputs.arity_suite_max }}"
+          if ([string]::IsNullOrWhiteSpace($aritySuiteMax)) {
+            $aritySuiteMax = "10"
+          }
 
           & $exe `
             --expr "a+b*c/d" `
@@ -92,6 +125,7 @@ jobs:
             --target-ms $targetMs `
             --max-auto-iters 128 `
             --datasets 3 `
+            --repeats $repeats `
             --backend std `
             --no-vm `
             --no-llvm-jit `
@@ -106,11 +140,30 @@ jobs:
             --target-ms $targetMs `
             --max-auto-iters 128 `
             --datasets 3 `
+            --repeats $repeats `
             --backend std `
             --no-vm `
             --no-llvm-jit `
             --csv "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv" `
             --json "bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json"
+
+          if ($runAritySuite -eq "true") {
+            & $exe `
+              --arity-suite-max $aritySuiteMax `
+              --arity-suite-mode complex `
+              --sizes $sizes `
+              --blocks $blocks `
+              --warmup 2 `
+              --target-ms $targetMs `
+              --max-auto-iters 96 `
+              --datasets 2 `
+              --repeats $repeats `
+              --backend std `
+              --no-vm `
+              --no-llvm-jit `
+              --csv "bench_arity_${{ matrix.os }}_${{ matrix.arch }}.csv" `
+              --json "bench_arity_${{ matrix.os }}_${{ matrix.arch }}.json"
+          }
 
       - name: Upload benchmark artifacts
         uses: actions/upload-artifact@v5
@@ -121,7 +174,10 @@ jobs:
             bench_bin_${{ matrix.os }}_${{ matrix.arch }}.json
             bench_mix_${{ matrix.os }}_${{ matrix.arch }}.csv
             bench_mix_${{ matrix.os }}_${{ matrix.arch }}.json
+            bench_arity_${{ matrix.os }}_${{ matrix.arch }}.csv
+            bench_arity_${{ matrix.os }}_${{ matrix.arch }}.json
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Bench summary
         shell: pwsh
@@ -150,6 +206,19 @@ jobs:
           $summary += "|---|---|---:|---:|"
           $summary += "| a+b*c/d | $($bestBin.variant) | $($bestBin.median_ns) | $($bestBin.verified) |"
           $summary += "| a+b-sin(c) | $($bestMix.variant) | $($bestMix.median_ns) | $($bestMix.verified) |"
+
+          $arityCsv = "bench_arity_${{ matrix.os }}_${{ matrix.arch }}.csv"
+          if (Test-Path $arityCsv) {
+            $arityRows = Import-Csv $arityCsv
+            if ($arityRows -and $arityRows.Count -gt 0) {
+              $bestArity = $arityRows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
+              $arityExprCount = ($arityRows.expression | Sort-Object -Unique).Count
+              $summary += "| arity-suite(1..10 complex) | $($bestArity.variant) | $($bestArity.median_ns) | $($bestArity.verified) |"
+              $summary += ""
+              $summary += "Arity suite expressions: $arityExprCount"
+            }
+          }
+
           $summary += ""
           $sizes = "${{ github.event.inputs.sizes }}"
           if ([string]::IsNullOrWhiteSpace($sizes)) { $sizes = "65536,262144" }
@@ -157,5 +226,11 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($blocks)) { $blocks = "128,256" }
           $targetMs = "${{ github.event.inputs.target_ms }}"
           if ([string]::IsNullOrWhiteSpace($targetMs)) { $targetMs = "120" }
-          $summary += "Config: sizes=$sizes, blocks=$blocks, target-ms=$targetMs"
+          $repeats = "${{ github.event.inputs.repeats }}"
+          if ([string]::IsNullOrWhiteSpace($repeats)) { $repeats = "3" }
+          $runAritySuite = "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_arity_suite) }}"
+          if ([string]::IsNullOrWhiteSpace($runAritySuite)) { $runAritySuite = "true" }
+          $aritySuiteMax = "${{ github.event.inputs.arity_suite_max }}"
+          if ([string]::IsNullOrWhiteSpace($aritySuiteMax)) { $aritySuiteMax = "10" }
+          $summary += "Config: sizes=$sizes, blocks=$blocks, target-ms=$targetMs, repeats=$repeats, arity-suite=$runAritySuite(max=$aritySuiteMax)"
           $summary -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

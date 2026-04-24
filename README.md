@@ -237,7 +237,7 @@ src/
      - `ubuntu-latest` (x64)
      - `windows-latest` (x64)
      - `macos-14` (arm64)
-   - `macos-13` (x64) 仅在每周定时或手动开启 `include_macos13=true` 时参与（避免日常排队阻塞）
+      - `macos-15-intel` (x64)
    - 支持手动参数：`sizes`、`blocks`、`target_ms`、`repeats`、`run_arity_suite`、`arity_suite_max`
    - 产物：每个 runner 的 CSV/JSON benchmark 结果
    - `GITHUB_STEP_SUMMARY` 自动输出核心两条表达式 +（可选）arity 套件最优变体

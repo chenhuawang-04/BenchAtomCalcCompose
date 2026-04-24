@@ -49,7 +49,7 @@ env:
 jobs:
   bench:
     name: bench-${{ matrix.os }}-${{ matrix.arch }}
-    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.include_macos13) }}
+    if: ${{ matrix.os != 'macos-13' || github.event_name == 'schedule' || github.event.inputs.include_macos13 == 'true' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -108,7 +108,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($repeats)) {
             $repeats = "3"
           }
-          $runAritySuite = "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_arity_suite) }}"
+          $runAritySuite = "${{ github.event_name == 'schedule' || github.event.inputs.run_arity_suite == 'true' }}"
           if ([string]::IsNullOrWhiteSpace($runAritySuite)) {
             $runAritySuite = "true"
           }
@@ -228,7 +228,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($targetMs)) { $targetMs = "120" }
           $repeats = "${{ github.event.inputs.repeats }}"
           if ([string]::IsNullOrWhiteSpace($repeats)) { $repeats = "3" }
-          $runAritySuite = "${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_arity_suite) }}"
+          $runAritySuite = "${{ github.event_name == 'schedule' || github.event.inputs.run_arity_suite == 'true' }}"
           if ([string]::IsNullOrWhiteSpace($runAritySuite)) { $runAritySuite = "true" }
           $aritySuiteMax = "${{ github.event.inputs.arity_suite_max }}"
           if ([string]::IsNullOrWhiteSpace($aritySuiteMax)) { $aritySuiteMax = "10" }

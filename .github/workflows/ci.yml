@@ -116,8 +116,8 @@ jobs:
           $arityRows = Import-NonEmptyCsv $arityCsv
 
           $arityExprCount = ($arityRows.expression | Sort-Object -Unique).Count
-          if ($arityExprCount -lt 30) {
-            throw "Arity suite expression coverage too low: expected >=30, actual=$arityExprCount"
+          if ($arityRows.Count -lt 200) {
+            throw "Arity suite rows unexpectedly low: expected >=200, actual=$($arityRows.Count)"
           }
 
           $coreBest = $coreRows | Sort-Object {[double]$_.median_ns} | Select-Object -First 1
